@@ -22,14 +22,27 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: 安装 Android SDK
-        uses: android-actions/setup-android@v3
+      # runner 自带 Android SDK，不再用 android-actions/setup-android（它内部的 sdkmanager tools 已失效）
+      - name: 准备 Android SDK
+        run: |
+          set -e
+          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          echo "SDK = $SDK"
+          ls "$SDK/platforms" 2>/dev/null || true
+          if [ ! -d "$SDK/platforms/android-34" ]; then
+            SDKMGR="$(find "$SDK" -name sdkmanager -type f | head -1)"
+            echo "缺少 android-34，用 $SDKMGR 安装"
+            yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+            "$SDKMGR" "platforms;android-34" "build-tools;34.0.0"
+          fi
+          echo "sdk.dir=$SDK" > local.properties
+          cat local.properties
 
       - name: 下载离线中文语音模型
         run: |
           set -e
           mkdir -p app/src/main/assets
-          curl -L --retry 3 -o /tmp/model.zip https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip
+          curl -L --retry 3 --retry-delay 3 -o /tmp/model.zip https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip
           unzip -q /tmp/model.zip -d /tmp/model
           rm -rf app/src/main/assets/model-cn
           mv /tmp/model/vosk-model-small-cn-0.22 app/src/main/assets/model-cn
