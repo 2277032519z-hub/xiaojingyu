@@ -2,11 +2,15 @@ package com.xiaojingyu.assistant
 
 import android.Manifest
 import android.content.Intent
+import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Bundle
+import android.provider.MediaStore
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -27,6 +31,12 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             updateStatus()
             askOverlayIfNeeded()
+            // 用户刚点了允许，直接帮他启动，不用再回去点一次
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED && !WakeService.running
+            ) {
+                statusView.postDelayed({ startAssistant() }, 600)
+            }
         }
     private val askOverlay =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -55,6 +65,12 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateStatus()
+        statusView.post(refresh)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        statusView.removeCallbacks(refresh)
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
@@ -152,6 +168,10 @@ class MainActivity : AppCompatActivity() {
         ))
         root.addView(row(
             button("开启无障碍（让它能动手）", primary = true) { openA11ySettings() }
+        ))
+        root.addView(row(
+            button("重启服务") { restartService() },
+            button("导出诊断") { exportDiagnostics() }
         ))
 
         root.addView(label("模型接口（OpenAI 兼容）"))
@@ -314,6 +334,63 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val refresh = object : Runnable {
+        override fun run() {
+            updateStatus()
+            statusView.postDelayed(this, 1000)
+        }
+    }
+
+    private fun restartService() {
+        WakeService.stop(this)
+        Toast.makeText(this, "正在重启…", Toast.LENGTH_SHORT).show()
+        statusView.postDelayed({
+            startAssistant()
+            statusView.postDelayed({ updateStatus() }, 800)
+        }, 700)
+    }
+
+    /** 把当前诊断写成 /sdcard/Download/xiaojingyu-status.txt，方便直接打开看或发给人。 */
+    private fun exportDiagnostics() {
+        val text = buildString {
+            appendLine("小鲸鱼诊断")
+            appendLine("时间: " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
+            appendLine("设备: " + Build.MANUFACTURER + " " + Build.MODEL + "  Android " + Build.VERSION.SDK_INT)
+            appendLine("服务状态: " + WakeService.statusText + "   running=" + WakeService.running)
+            appendLine("最近错误: " + WakeService.lastError.ifBlank { "（无）" })
+            appendLine("麦克风: " + has(Manifest.permission.RECORD_AUDIO))
+            appendLine("通话: " + has(Manifest.permission.CALL_PHONE))
+            appendLine("通讯录: " + has(Manifest.permission.READ_CONTACTS))
+            appendLine("通知: " + (Build.VERSION.SDK_INT < 33 || has(Manifest.permission.POST_NOTIFICATIONS)))
+            appendLine("悬浮窗: " + Settings.canDrawOverlays(this@MainActivity))
+            appendLine("电池白名单: " + isIgnoringBattery())
+            appendLine("无障碍: " + isA11yOn())
+            appendLine("模型: " + modelEdit.text + " @ " + baseEdit.text)
+        }
+        val name = "xiaojingyu-status.txt"
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, name)
+                    put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                if (uri == null) throw IllegalStateException("无法创建文件")
+                contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
+            } else {
+                val dir = android.os.Environment.getExternalStoragePublicDirectory("Download")
+                dir.mkdirs()
+                java.io.File(dir, name).writeText(text)
+            }
+            Toast.makeText(this, "已导出到 /sdcard/Download/$name", Toast.LENGTH_LONG).show()
+        } catch (e: Throwable) {
+            Toast.makeText(this, "导出失败：" + e.message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun has(perm: String): Boolean =
+        ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
+
     private fun updateStatus() {
         val mic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val notif = Build.VERSION.SDK_INT < 33 ||
@@ -325,10 +402,14 @@ class MainActivity : AppCompatActivity() {
 
         val mark = { ok: Boolean -> if (ok) "✓" else "✗" }
         statusView.text = buildString {
-            append(if (running) "● 正在聆听中\n" else "○ 未启动\n")
+            append(if (running) "● " else "○ ")
+            append(WakeService.statusText).append("\n")
             append("麦克风 ").append(mark(mic)).append("    通知 ").append(mark(notif))
             append("    悬浮窗 ").append(mark(overlay)).append("\n")
             append("电池 ").append(mark(battery)).append("    无障碍 ").append(mark(a11y))
+            if (WakeService.lastError.isNotBlank()) {
+                append("\n\n最近一次失败：").append(WakeService.lastError)
+            }
             if (!(mic && notif && overlay && battery && a11y)) {
                 append("\n\n有项目没打勾：先点「① 授予权限」，把系统弹的窗口都允许。")
             } else if (!running) {

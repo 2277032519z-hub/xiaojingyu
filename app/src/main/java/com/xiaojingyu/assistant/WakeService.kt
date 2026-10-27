@@ -49,6 +49,14 @@ class WakeService : Service() {
         @Volatile var running = false
             private set
 
+        /** 给设置页看的实时状态（服务可能被系统杀掉，所以不能只靠 running）。 */
+        @Volatile var statusText: String = "未启动"
+            private set
+
+        /** 最近一次失败原因，设置页会显示出来。 */
+        @Volatile var lastError: String = ""
+            private set
+
         fun start(ctx: Context) {
             val i = Intent(ctx, WakeService::class.java).setAction(ACTION_START)
             ContextCompat.startForegroundService(ctx, i)
@@ -117,7 +125,7 @@ class WakeService : Service() {
     private fun boot() {
         if (running) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            updateNotif("没有麦克风权限，请在「小鲸鱼」里点「授予权限」")
+            setStatus("未启动（缺麦克风权限）", "没有麦克风权限：请点「① 授予权限」，在系统弹窗里选「仅在使用该应用时允许」")
             return
         }
         running = true
@@ -125,10 +133,10 @@ class WakeService : Service() {
         engine.wakeWords = cfg.wakeList
         engine.init(
             cfg.wakeList,
-            onReady = { main.post { updateNotif("在听，说「" + (cfg.wakeList.firstOrNull() ?: "小鲸鱼") + "」") } },
+            onReady = { main.post { setStatus("在听，说「" + (cfg.wakeList.firstOrNull() ?: "小鲸鱼") + "」") } },
             onError = { msg ->
                 running = false
-                main.post { updateNotif(msg) }
+                main.post { setStatus("未启动（语音模型出错）", msg) }
             }
         )
         startAudio()
@@ -147,7 +155,7 @@ class WakeService : Service() {
             }
             if (!running) return@Thread
             if (!engine.ready) {
-                main.post { updateNotif("语音模型没加载成功：" + engine.status) }
+                main.post { setStatus("语音模型没加载成功：" + engine.status) }
                 return@Thread
             }
 
@@ -167,14 +175,14 @@ class WakeService : Service() {
                 null
             }
             if (r == null || r.state != AudioRecord.STATE_INITIALIZED) {
-                main.post { updateNotif("麦克风打不开，可能被其他应用占用") }
+                main.post { setStatus("麦克风打不开，可能被其他应用占用") }
                 return@Thread
             }
             record = r
             try {
                 r.startRecording()
             } catch (e: Throwable) {
-                main.post { updateNotif("录音启动失败：" + e.message) }
+                main.post { setStatus("录音启动失败：" + e.message) }
                 return@Thread
             }
 
@@ -251,7 +259,7 @@ class WakeService : Service() {
         beep()
         overlay.show()
         overlay.set("在听…", "说完停顿一下就行")
-        updateNotif("在听你说…")
+        setStatus("在听你说…")
     }
 
     private fun ask(raw: String) {
@@ -342,7 +350,7 @@ class WakeService : Service() {
         overlay.set("小鲸鱼", answer)
         state = State.SPEAKING
         if (cfg.speak) {
-            updateNotif("正在说…")
+            setStatus("正在说…")
             speaker.speak(answer) { main.post { scheduleIdle(800) } }
         } else {
             scheduleIdle(4500)
@@ -353,7 +361,7 @@ class WakeService : Service() {
         overlay.show()
         overlay.set(if (isError) "出错了" else "小鲸鱼", message)
         state = State.SPEAKING
-        updateNotif(message.take(40))
+        setStatus(message.take(40))
         val cfg = Cfg.load(this)
         if (isError && cfg.speak) {
             speaker.speak(message) { main.post { scheduleIdle(delay) } }
@@ -368,7 +376,7 @@ class WakeService : Service() {
             overlay.hide()
             engine.resetKws()
             val w = Cfg.load(this).wakeList.firstOrNull() ?: "小鲸鱼"
-            updateNotif("在听，说「$w」")
+            setStatus("在听，说「$w」")
         }, delay)
     }
 
@@ -396,6 +404,7 @@ class WakeService : Service() {
 
     private fun shutdown() {
         running = false
+        statusText = "已停止"
         state = State.IDLE
         try {
             record?.stop()
@@ -483,11 +492,20 @@ class WakeService : Service() {
             } else {
                 startForeground(NOTIF_ID, notif)
             }
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            statusText = "未启动（前台服务被拒绝）"
+            lastError = "startForeground 失败：" + (e.message ?: e.javaClass.simpleName) +
+                "（可能没给麦克风权限，或系统禁止后台使用麦克风）"
         }
     }
 
-    private fun updateNotif(text: String) {
+    private fun setStatus(text: String, err: String? = null) {
+        statusText = text
+        if (!err.isNullOrBlank()) lastError = err
+        if (text.startsWith("正在听") || text.contains("在听")) {
+            // 每次正常起来就清掉旧错误，避免误导
+            if (err == null && lastError.isNotEmpty() && text.contains("在听")) lastError = ""
+        }
         try {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.notify(NOTIF_ID, buildNotification(text))
