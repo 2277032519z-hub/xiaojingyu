@@ -3,7 +3,7 @@ package com.xiaojingyu.assistant
 import android.content.Context
 import org.vosk.Model
 import org.vosk.Recognizer
-import org.vosk.android.StorageService
+import java.io.File
 import java.io.IOException
 
 /**
@@ -33,28 +33,51 @@ class VoskEngine(private val ctx: Context) {
             return
         }
         status = "正在加载语音模型…"
-        StorageService.unpack(
-            ctx,
-            ASSET_DIR,
-            MODEL_DIR,
-            { m: Model ->
-                try {
-                    model = m
-                    kws = buildKws(m, wake)
-                    asr = Recognizer(m, SAMPLE_RATE)
-                    ready = true
-                    status = "模型就绪（离线）"
-                    onReady()
-                } catch (e: Throwable) {
-                    status = "识别器初始化失败：" + e.message
-                    onError(status)
+        Thread {
+            try {
+                val dir = File(ctx.filesDir, MODEL_DIR)
+                val marker = File(dir, ".ready")
+                if (!marker.exists()) {
+                    if (dir.exists()) dir.deleteRecursively()
+                    copyAssetDir(ASSET_DIR, dir)
                 }
-            },
-            { e: IOException ->
-                status = "模型加载失败：" + e.message
+                val m = Model(dir.absolutePath)
+                model = m
+                kws = buildKws(m, wake)
+                asr = Recognizer(m, SAMPLE_RATE)
+                marker.writeText("ok")
+                ready = true
+                status = "模型就绪（离线）"
+                onReady()
+            } catch (e: Throwable) {
+                status = "模型加载失败：" + (e.message ?: e.javaClass.simpleName)
                 onError(status)
             }
-        )
+        }.apply {
+            isDaemon = true
+            name = "vosk-init"
+            start()
+        }
+    }
+
+    /** 把 assets 下的模型目录整个拷到私有目录（一次即可，用 .ready 标记）。 */
+    private fun copyAssetDir(assetDir: String, target: File) {
+        val am = ctx.assets
+        val children = am.list(assetDir)
+            ?: throw IOException("assets 里没有 " + assetDir)
+        if (children.isEmpty()) throw IOException("assets 里 " + assetDir + " 是空的")
+        if (!target.exists() && !target.mkdirs()) throw IOException("建不了目录 " + target)
+        for (name in children) {
+            val rel = assetDir + "/" + name
+            val sub = am.list(rel) ?: emptyArray()
+            if (sub.isNotEmpty()) {
+                copyAssetDir(rel, File(target, name))
+            } else {
+                am.open(rel).use { input ->
+                    File(target, name).outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+        }
     }
 
     private fun buildKws(m: Model, wake: List<String>): Recognizer {
