@@ -1,1 +1,8 @@
-# 占位文件，随后被正式内容覆盖
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+app/src/main/assets/model-cn/
+.token
+.github-token

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">小鲸鱼</string>
+    <string name="channel_name">常驻聆听</string>
+    <string name="notif_listening">小鲸鱼在听，说「小鲸鱼」唤醒</string>
+    <string name="notif_active">小鲸鱼正在处理…</string>
+    <string name="a11y_label">小鲸鱼 屏幕助手</string>
+    <string name="a11y_desc">让「小鲸鱼」能读取当前屏幕的文字、按你说的点按钮、替你打字。只在你让它做事时读取当前窗口，不记录、不上传。</string>
+</resources>
